@@ -1,18 +1,20 @@
 import { Injectable } from '@nestjs/common';
-import { Processor, InjectQueue } from '@nestjs/bullmq';
-import { Job, Queue } from 'bullmq';
-import { MikroORM, CreateRequestContext, ref } from '@mikro-orm/core';
+import { CreateRequestContext, MikroORM, ref } from '@mikro-orm/core';
+import { InjectQueue, Processor } from '@nestjs/bullmq';
 import { RedisService } from '@songkeys/nestjs-redis';
-import { AbstractProcessor, SocketRegistry } from '@libs/core';
-import { MatchRequestEntity, MatchEntity, MatchStatus } from '@libs/orm';
-import { WsNamespace } from '@libs/ws';
-import { MatchmakingService } from '../service/matchmaking.service';
-import { MATCH_ATTEMPT_QUEUE, ACCEPT_TIMEOUT_QUEUE } from '../constant/queue.constant';
-import { MATCH_LUA } from '../constant/lua.constant';
+import { Job, Queue } from 'bullmq';
+
+import { AbstractProcessor } from '@libs/core';
+import { MatchEntity, MatchRequestEntity, MatchStatus } from '@libs/orm';
+import { EventPublisher } from '@libs/ws';
+
 import { ACCEPT_TIMEOUT_SECONDS } from '../../constant/matchmaking.constant';
+import { RedisKey } from '../../constant/redis-key.constant';
+import { MATCH_LUA } from '../constant/lua.constant';
+import { ACCEPT_TIMEOUT_QUEUE, MATCH_ATTEMPT_QUEUE } from '../constant/queue.constant';
 import { AcceptTimeoutJobData } from '../dto/job-data/accept-timeout.job-data';
 import { MatchAttemptJobData } from '../dto/job-data/match-attempt.job-data';
-import { RedisKey } from '../../constant/redis-key.constant';
+import { MatchmakingService } from '../service/matchmaking.service';
 
 @Processor(MATCH_ATTEMPT_QUEUE)
 @Injectable()
@@ -20,7 +22,7 @@ export class MatchAttemptProcessor extends AbstractProcessor<MatchAttemptJobData
     constructor(
         private readonly orm: MikroORM,
         private readonly redis: RedisService,
-        private readonly socketRegistry: SocketRegistry,
+        private readonly events: EventPublisher,
         private readonly matchmakingService: MatchmakingService,
         @InjectQueue(MATCH_ATTEMPT_QUEUE) private readonly matchAttemptQueue: Queue,
         @InjectQueue(ACCEPT_TIMEOUT_QUEUE) private readonly acceptTimeoutQueue: Queue,
@@ -34,28 +36,20 @@ export class MatchAttemptProcessor extends AbstractProcessor<MatchAttemptJobData
         const key = RedisKey.matchAttemptQueue(duration, language);
 
         const result = await client.eval(MATCH_LUA, 1, key);
-
-        if (result) {
-            await this.onMatch(result as string[]);
-        }
+        if (result) await this.onMatch(result as string[]);
 
         const remaining = await client.zcard(key);
+        if (remaining < 2) return;
 
-        const matchAttemptJobData: MatchAttemptJobData = {
-            duration,
-            language,
-        };
-
-        if (remaining >= 2) {
-            await this.matchAttemptQueue.add('match-attempt', matchAttemptJobData, {
-                jobId: `mm:${duration}:${language}`,
-                delay: 100,
-            });
-        }
+        await this.matchAttemptQueue.add(
+            'match-attempt',
+            { duration, language },
+            { jobId: `mm:${duration}:${language}`, delay: 100 },
+        );
     }
 
     @CreateRequestContext()
-    private async onMatch(userIds: string[]) {
+    private async onMatch(userIds: string[]): Promise<void> {
         const client = this.redis.getClient();
 
         const userKeys = userIds.map((userId) => RedisKey.matchmakingUser(userId));
@@ -63,12 +57,9 @@ export class MatchAttemptProcessor extends AbstractProcessor<MatchAttemptJobData
 
         await Promise.all(userIds.map((userId) => this.matchmakingService.dequeue(userId)));
 
-        if (!rawSearchData.length) {
-            return;
-        }
+        if (!rawSearchData.length) return;
 
         const parsedSearchData = rawSearchData.map((data) => JSON.parse(data));
-
         const matchRequests = await this.orm.em.find(
             MatchRequestEntity,
             { id: { $in: parsedSearchData.map((data) => data.searchId) } },
@@ -76,31 +67,29 @@ export class MatchAttemptProcessor extends AbstractProcessor<MatchAttemptJobData
         );
 
         let matchId: string;
-
         await this.orm.em.transactional(async (em) => {
             const match = em.create(MatchEntity, { status: MatchStatus.PENDING });
             matchId = match.id;
 
-            matchRequests.forEach((request) => {
+            for (const request of matchRequests) {
                 request.match = ref(match);
-            });
+            }
             await em.flush();
         });
 
-        const acceptTimeoutJobData: AcceptTimeoutJobData = {
-            matchId,
-            userIds,
-        };
-
+        const acceptTimeoutJobData: AcceptTimeoutJobData = { matchId, userIds };
         await this.acceptTimeoutQueue.add('accept-timeout', acceptTimeoutJobData, {
             delay: ACCEPT_TIMEOUT_SECONDS * 1000,
         });
 
-        matchRequests.forEach((request) => {
-            this.socketRegistry
-                .of(WsNamespace.MATCHMAKING_SEARCH)
-                .get(request.user.id)
-                ?.emit('search:found', { searchId: request.id, acceptTime: ACCEPT_TIMEOUT_SECONDS });
-        });
+        await Promise.all(
+            matchRequests.map((request) =>
+                this.events.publishToUser({
+                    userId: request.user.id,
+                    event: 'search:found',
+                    payload: { searchId: request.id, acceptTime: ACCEPT_TIMEOUT_SECONDS },
+                }),
+            ),
+        );
     }
 }

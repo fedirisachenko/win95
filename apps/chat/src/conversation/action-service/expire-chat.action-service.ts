@@ -6,6 +6,8 @@ import { WsNamespace } from '@libs/ws';
 import { ChatExpireInput } from '../transport/rmq/dto/input/chat-expire.input';
 import { ChatConversationRoom } from '../transport/ws/room/chat-conversation.room';
 
+// Same-process room broadcast: emits to all participants of chat:<id> and disconnects them.
+// EventPublisher targets user:<id> / broadcast — not feature rooms — so we keep WsServerRegistry here.
 @Injectable()
 export class ExpireChatActionService {
     constructor(

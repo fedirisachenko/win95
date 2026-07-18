@@ -12,4 +12,8 @@ export class WsServerRegistry {
     of(namespace: string): Server | undefined {
         return this.servers.get(namespace);
     }
+
+    all(): Server[] {
+        return Array.from(this.servers.values());
+    }
 }

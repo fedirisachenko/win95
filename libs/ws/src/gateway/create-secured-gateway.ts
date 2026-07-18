@@ -1,18 +1,21 @@
-import { Injectable, Type, ForbiddenException, UnauthorizedException } from '@nestjs/common';
+import { ForbiddenException, Injectable, Type, UnauthorizedException } from '@nestjs/common';
 import { ModuleRef } from '@nestjs/core';
 import {
-    WebSocketGateway,
-    WebSocketServer,
-    OnGatewayInit,
     OnGatewayConnection,
     OnGatewayDisconnect,
+    OnGatewayInit,
+    WebSocketGateway,
+    WebSocketServer,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { WsSecurityGuard, SecurityManager } from '@libs/security';
+
 import { SocketRegistry, WsServerRegistry } from '@libs/core';
+import { SecurityManager, WsSecurityGuard } from '@libs/security';
+
+import { BROADCAST_CHANNEL, userChannel } from '../constant/ws-channel.constant';
+import { getWsActionGuards } from '../decorator/use-ws-guards.decorator';
 import { WsActionRegistry } from '../registry/ws-action.registry';
 import { AuthenticatedSocket } from '../type/authenticated-socket.type';
-import { getWsActionGuards } from '../decorator/use-ws-guards.decorator';
 import { WsActionGuard } from '../type/ws-action-guard.interface';
 
 export interface WsGatewayOptions {
@@ -47,6 +50,7 @@ export function createSecuredGateway(options: WsGatewayOptions): Type<any> {
                 const user = this.guard.authenticate(client);
                 if (!user) return next(new UnauthorizedException());
                 client.data.user = user;
+
                 if (options.connectionPermission) {
                     const granted = await this.securityManager.isGranted(options.connectionPermission, user.sub);
                     if (!granted) return next(new ForbiddenException());
@@ -57,13 +61,17 @@ export function createSecuredGateway(options: WsGatewayOptions): Type<any> {
         }
 
         handleConnection(client: AuthenticatedSocket): void {
+            const userId = client.data.user.sub;
+            client.join(userChannel(userId));
+            client.join(BROADCAST_CHANNEL);
+            this.socketRegistry.of(options.namespace).set(userId, client);
+
             client.onAny(async (event: string, data: unknown) => {
                 const action = this.wsActionRegistry.get(event);
                 if (!action) {
                     client.emit('error', { message: `Unknown event: ${event}` });
                     return;
                 }
-                this.socketRegistry.of(options.namespace).set(client.data.user.sub, client);
 
                 try {
                     const guardClasses = getWsActionGuards(action.invoke);

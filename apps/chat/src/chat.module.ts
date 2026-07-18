@@ -9,6 +9,7 @@ import { OrmModule } from '@libs/orm';
 import { CoreModule } from '@libs/core';
 import { SecurityModule } from '@libs/security';
 import { RmqModule } from '@libs/rmq';
+import { WsModule } from '@libs/ws';
 import mikroOrmConfig from '@config/mikro-orm.config';
 import redisConfig from '@config/redis.config';
 import bullmqConfig from '@config/bullmq.config';
@@ -21,6 +22,7 @@ import { ManagementModule } from './management/management.module';
         CoreModule.register(),
         SecurityModule.forRoot(),
         RedisModule.forRoot(redisConfig),
+        WsModule.forRoot(),
         BullModule.forRoot(bullmqConfig),
         BullBoardModule.forRoot({
             route: '/queues',

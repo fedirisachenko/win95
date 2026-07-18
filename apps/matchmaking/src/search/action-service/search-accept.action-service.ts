@@ -4,9 +4,8 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { RedisService } from '@songkeys/nestjs-redis';
 
-import { SocketRegistry } from '@libs/core';
 import { MatchRequestEntity, MatchStatus } from '@libs/orm';
-import { WsNamespace } from '@libs/ws';
+import { EventPublisher } from '@libs/ws';
 
 import { ACCEPT_TTL_SECONDS, CHAT_READY_TIMEOUT_SECONDS } from '../../constant/matchmaking.constant';
 import { RedisKey } from '../../constant/redis-key.constant';
@@ -25,7 +24,7 @@ export class SearchAcceptActionService {
     constructor(
         private readonly orm: MikroORM,
         private readonly redis: RedisService,
-        private readonly socketRegistry: SocketRegistry,
+        private readonly events: EventPublisher,
         @InjectQueue(CHAT_READY_TIMEOUT_QUEUE) private readonly chatReadyTimeoutQueue: Queue,
     ) {}
 
@@ -48,7 +47,7 @@ export class SearchAcceptActionService {
 
         if (acceptedUserCount < 2) {
             await client.expire(acceptKey, ACCEPT_TTL_SECONDS);
-            this.socketRegistry.of(WsNamespace.MATCHMAKING_SEARCH).get(userId)?.emit('search:waiting', {});
+            await this.events.publishToUser({ userId, event: 'search:waiting', payload: {} });
             return null;
         }
 

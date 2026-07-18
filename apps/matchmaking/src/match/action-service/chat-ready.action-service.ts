@@ -1,20 +1,22 @@
 import { Injectable } from '@nestjs/common';
 
-import { SocketRegistry } from '@libs/core';
-import { WsNamespace } from '@libs/ws';
+import { EventPublisher } from '@libs/ws';
 
 import { ChatReadyInput } from '../transport/rmq/dto/input/chat-ready.input';
 
 @Injectable()
 export class ChatReadyActionService {
-    constructor(private readonly socketRegistry: SocketRegistry) {}
+    constructor(private readonly events: EventPublisher) {}
 
     async invoke(data: ChatReadyInput): Promise<void> {
-        for (const userId of data.userIds) {
-            this.socketRegistry
-                .of(WsNamespace.MATCHMAKING_SEARCH)
-                .get(userId)
-                ?.emit('search:completed', { chatId: data.chatId });
-        }
+        await Promise.all(
+            data.userIds.map((userId) =>
+                this.events.publishToUser({
+                    userId,
+                    event: 'search:completed',
+                    payload: { chatId: data.chatId },
+                }),
+            ),
+        );
     }
 }
